@@ -5,14 +5,10 @@ import (
 	"compress/bzip2"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"sync"
-
 	humanize "github.com/dustin/go-humanize"
 	"github.com/golang/protobuf/proto"
 	xz "github.com/spencercw/go-xz"
@@ -74,11 +70,11 @@ func (ph *payloadHeader) ReadFromPayload() error {
 		return err
 	}
 	ph.Version = binary.BigEndian.Uint64(buf)
-	fmt.Printf("Payload Version: %d\n", ph.Version)
-
 	if ph.Version != brilloMajorPayloadVersion {
 		return fmt.Errorf("Unsupported payload version: %d", ph.Version)
 	}
+
+	
 
 	// Read Manifest Len
 	buf = make([]byte, 8)
@@ -86,7 +82,7 @@ func (ph *payloadHeader) ReadFromPayload() error {
 		return err
 	}
 	ph.ManifestLen = binary.BigEndian.Uint64(buf)
-	fmt.Printf("Payload Manifest Length: %d\n", ph.ManifestLen)
+	
 
 	ph.Size = 24
 
@@ -96,7 +92,7 @@ func (ph *payloadHeader) ReadFromPayload() error {
 		return err
 	}
 	ph.MetadataSignatureLen = binary.BigEndian.Uint32(buf)
-	fmt.Printf("Payload Manifest Signature Length: %d\n", ph.MetadataSignatureLen)
+	
 
 	return nil
 }
@@ -111,15 +107,9 @@ func NewPayload(filename string) Payload {
 	return payload
 }
 
-// SetConcurrency sets number of workers
-func (p *Payload) SetConcurrency(concurrency int) {
-	p.concurrency = concurrency
-}
 
-// GetConcurrency returns number of workers
-func (p *Payload) GetConcurrency() int {
-	return p.concurrency
-}
+
+
 
 // Open tries to open payload.bin file defined by Filename
 func (p *Payload) Open() error {
@@ -189,12 +179,12 @@ func (p *Payload) Init() error {
 	p.metadataSize = int64(p.header.Size + p.header.ManifestLen)
 	p.dataOffset = p.metadataSize + int64(p.header.MetadataSignatureLen)
 
-	fmt.Println("Found partitions:")
 	for i, partition := range p.deltaArchiveManifest.Partitions {
-		fmt.Printf("%s (%s)", partition.GetPartitionName(), humanize.Bytes(*partition.GetNewPartitionInfo().Size))
+		fmt.Printf("%s", partition.GetPartitionName())
+		fmt.Printf("|%s (%s)", partition.GetPartitionName(),humanize.Bytes(*partition.GetNewPartitionInfo().Size))
 
 		if i < len(deltaArchiveManifest.Partitions)-1 {
-			fmt.Printf(", ")
+			fmt.Printf(" ")
 		} else {
 			fmt.Printf("\n")
 		}
@@ -302,74 +292,7 @@ func (p *Payload) Extract(partition *chromeos_update_engine.PartitionUpdate, out
 		default:
 			return fmt.Errorf("Unhandled operation type: %s", operation.GetType().String())
 		}
-
-		// verify hash
-		hash := hex.EncodeToString(bufSha.Sum(nil))
-		expectedHash := hex.EncodeToString(operation.GetDataSha256Hash())
-		if expectedHash != "" && hash != expectedHash {
-			return fmt.Errorf("Verify failed (Checksum mismatch): %s (%s != %s)", name, hash, expectedHash)
-		}
+		
 	}
-
 	return nil
-}
-
-func (p *Payload) worker() {
-	for req := range p.requests {
-		partition := req.partition
-		targetDirectory := req.targetDirectory
-
-		name := fmt.Sprintf("%s.img", partition.GetPartitionName())
-		filepath := fmt.Sprintf("%s/%s", targetDirectory, name)
-		file, err := os.OpenFile(filepath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0755)
-		if err != nil {
-		}
-		if err := p.Extract(partition, file); err != nil {
-			fmt.Println(err.Error())
-		}
-
-		p.workerWG.Done()
-	}
-}
-
-func (p *Payload) spawnExtractWorkers(n int) {
-	for i := 0; i < n; i++ {
-		go p.worker()
-	}
-}
-
-func (p *Payload) ExtractSelected(targetDirectory string, partitions []string) error {
-	if !p.initialized {
-		return errors.New("Payload has not been initialized")
-	}
-	p.progress = mpb.New()
-
-	p.requests = make(chan *request, 100)
-	p.spawnExtractWorkers(p.concurrency)
-
-	sort.Strings(partitions)
-
-	for _, partition := range p.deltaArchiveManifest.Partitions {
-		if len(partitions) > 0 {
-			idx := sort.SearchStrings(partitions, *partition.PartitionName)
-			if idx == len(partitions) || partitions[idx] != *partition.PartitionName {
-				continue
-			}
-		}
-
-		p.workerWG.Add(1)
-		p.requests <- &request{
-			partition:       partition,
-			targetDirectory: targetDirectory,
-		}
-	}
-
-	p.workerWG.Wait()
-	close(p.requests)
-
-	return nil
-}
-
-func (p *Payload) ExtractAll(targetDirectory string) error {
-	return p.ExtractSelected(targetDirectory, nil)
 }
